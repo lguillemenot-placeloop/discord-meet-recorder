@@ -1,0 +1,3 @@
+faster-whisper==1.2.1
+# av 17+ a retiré l’argument metadata_errors qu’utilise faster-whisper 1.2.1
+av==16.0.1
