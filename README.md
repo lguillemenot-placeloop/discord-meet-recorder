@@ -15,6 +15,7 @@ mcp (lecture seule, HTTP + jeton) ◄── Claude Code
 
 - Discord envoie un flux séparé pour chaque personne, donc on sait toujours qui parle : pas de reconnaissance des voix à faire.
 - L'audio ne sort pas du serveur : la transcription tourne sur la machine, et les WAV sont supprimés une fois la transcription faite (`KEEP_AUDIO=false`).
+- Les phrases que Whisper invente sur du silence (« Merci d'avoir regardé cette vidéo », « Sous-titrage ST'501 », « abonnez-vous à la chaîne »…) sont retirées de la transcription (`transcriber/hallucinations.py`) et notées dans les logs du transcripteur.
 - Le résumé, les décisions et les actions, c'est Claude qui les fait au moment où tu lui demandes, à partir de la transcription.
 
 ## Utilisation dans Discord
