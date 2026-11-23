@@ -12,6 +12,25 @@ export const CHANNELS = 1;
 const SILENCE_MS = 1_000;
 /** En dessous, c'est un bruit (clic, souffle) : on ne garde pas. */
 const MIN_SEGMENT_MS = 400;
+/** À l'arrêt, temps maximal laissé aux prises de parole en cours pour être écrites. */
+const STOP_TIMEOUT_MS = 5_000;
+
+/**
+ * Décodeur qui saute les paquets Opus illisibles au lieu de s'arrêter. Le décodeur de prism-media
+ * passe en erreur au premier paquet invalide (fréquent juste après une connexion au salon) : le flux
+ * est alors détruit sans « end », la capture ne se termine jamais, la personne n'est plus
+ * enregistrée et l'arrêt du meet reste bloqué.
+ */
+class TolerantDecoder extends prism.opus.Decoder {
+  invalidPackets = 0;
+
+  override _transform(chunk: Buffer, encoding: BufferEncoding, done: (err?: Error | null) => void): void {
+    super._transform(chunk, encoding, (err?: Error | null) => {
+      if (err) this.invalidPackets++;
+      done();
+    });
+  }
+}
 
 interface ActiveCapture {
   stop: () => void;
@@ -53,7 +72,14 @@ export class MeetingRecorder {
     this.connection.receiver.speaking.off('start', this.onSpeakingStart);
     const pending = [...this.active.values()];
     for (const capture of pending) capture.stop();
-    await Promise.allSettled(pending.map((c) => c.done));
+    // Garde-fou : une capture bloquée ne doit jamais empêcher le meet de se clore.
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      Promise.allSettled(pending.map((c) => c.done)).then(() => false),
+      new Promise<boolean>((r) => (timer = setTimeout(() => r(true), STOP_TIMEOUT_MS))),
+    ]);
+    clearTimeout(timer);
+    if (timedOut) console.warn(`[recorder] ${this.active.size} prise(s) de parole non terminée(s) à l’arrêt, abandonnée(s)`);
   }
 
   private readonly onSpeakingStart = (userId: string): void => {
@@ -66,7 +92,7 @@ export class MeetingRecorder {
     const opusStream = this.connection.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_MS },
     });
-    const decoder = new prism.opus.Decoder({ rate: SAMPLE_RATE, channels: CHANNELS, frameSize: SAMPLE_RATE / 50 });
+    const decoder = new TolerantDecoder({ rate: SAMPLE_RATE, channels: CHANNELS, frameSize: SAMPLE_RATE / 50 });
     const chunks: Buffer[] = [];
 
     let resolveDone!: () => void;
@@ -76,8 +102,13 @@ export class MeetingRecorder {
     const finished = new Promise<void>((resolve) => {
       decoder.on('data', (chunk: Buffer) => chunks.push(chunk));
       decoder.once('end', resolve);
+      // Filets : quoi qu'il arrive au décodeur ou au flux, la prise de parole se termine avec ce
+      // qui a été reçu, et l'abonnement est libéré pour que la suivante reparte sur un flux neuf.
+      decoder.once('close', resolve);
       decoder.once('error', (err) => {
-        console.warn(`[recorder] paquet Opus illisible pour ${userId} :`, err.message);
+        console.warn(`[recorder] décodeur Opus en erreur pour ${userId} :`, err.message);
+        opusStream.destroy();
+        resolve();
       });
       opusStream.once('error', () => resolve());
     });
@@ -85,6 +116,9 @@ export class MeetingRecorder {
 
     try {
       await finished;
+      if (decoder.invalidPackets > 0) {
+        console.warn(`[recorder] ${decoder.invalidPackets} paquet(s) Opus illisible(s) ignoré(s) pour ${userId}`);
+      }
       await this.writeSegment(userId, startedAtMs, Buffer.concat(chunks));
     } finally {
       this.active.delete(userId);

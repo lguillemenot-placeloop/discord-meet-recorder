@@ -120,3 +120,44 @@ test('une prise de parole par personne, en 16 kHz mono, avec le bon minutage', a
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test('un paquet Opus illisible ne coupe ni la prise de parole, ni les suivantes, ni l’arrêt', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'meet-'));
+  try {
+    const store = new MeetingStore(dataDir);
+    const meeting = newMeeting();
+    await store.create(meeting);
+    const { connection, speaking, streams } = fakeConnection();
+    const recorder = new MeetingRecorder(connection, meeting, store, async () => 'Alice');
+    recorder.start();
+
+    // Comme juste après une connexion au salon : un paquet invalide au milieu de la parole.
+    speaking.emit('start', 'alice');
+    const first = streams.get('alice')!;
+    const tone = opusTone(1_000, 440);
+    for (const p of tone.slice(0, 25)) first.push(p);
+    first.push(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff]));
+    for (const p of tone.slice(25)) first.push(p);
+    first.push(null);
+    await new Promise((r) => setTimeout(r, 150));
+
+    // La même personne reparle : un nouveau flux doit être ouvert et enregistré.
+    speaking.emit('start', 'alice');
+    const second = streams.get('alice')!;
+    assert.notEqual(second, first, 'la deuxième prise de parole doit avoir son propre flux');
+    for (const p of opusTone(600, 440)) second.push(p);
+
+    const started = Date.now();
+    await recorder.stop();
+    assert.ok(Date.now() - started < 2_000, 'l’arrêt ne doit pas rester bloqué');
+
+    const segments = (await readFile(join(store.dir(meeting.id), 'segments.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Segment);
+    assert.equal(segments.length, 2);
+    assert.ok(segments[0].durationMs >= 900, `durée 1re prise ${segments[0].durationMs}`);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
