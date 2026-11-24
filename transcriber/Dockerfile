@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY transcriber.py stop_phrase.py ./
+COPY transcriber.py stop_phrase.py hallucinations.py ./
 
 # Même uid que l'utilisateur « node » du bot : les deux écrivent dans le volume /data.
 # Les volumes nommés reprennent ce propriétaire à leur création.

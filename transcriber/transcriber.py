@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hallucinations import is_hallucination
 from stop_phrase import ends_with_stop_phrase
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -88,6 +89,12 @@ def transcribe_meeting(model, meeting_dir: Path) -> int:
         for piece in pieces:
             text = piece.text.strip()
             if not text:
+                continue
+            if is_hallucination(text):
+                log.info(
+                    "%s : phrase inventée retirée (%s, no_speech=%.2f, logprob=%.2f) : « %s »",
+                    meeting_dir.name, seg["speaker"], piece.no_speech_prob, piece.avg_logprob, text,
+                )
                 continue
             entries.append(
                 {
